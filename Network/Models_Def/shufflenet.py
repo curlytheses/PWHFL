@@ -92,6 +92,15 @@ class ShuffleNet(nn.Module):
             self.in_planes = out_planes
         return nn.Sequential(*layers)
 
+    def forward_logits(self, x):
+        """Evaluation-only fast path; retains all projector checkpoint parameters.
+
+        The default forward still computes and returns both outputs, preserving
+        training-time BatchNorm updates and the original model interface.
+        """
+        out = self.backbone(x)
+        return self.linear(out.view(out.size(0), -1))
+
     def forward(self, x):
         out = self.backbone(x)
         out = out.view(out.size(0), -1)
@@ -106,16 +115,15 @@ def ShuffleNetG2(num_classes = 10):
         'num_blocks': [4,8,4],
         'groups': 2
     }
-    num_classes = num_classes
     return ShuffleNet(cfg, num_classes)
 
-def ShuffleNetG3():
+def ShuffleNetG3(num_classes=10):
     cfg = {
         'out_planes': [240,480,960],
         'num_blocks': [4,8,4],
         'groups': 3
     }
-    return ShuffleNet(cfg)
+    return ShuffleNet(cfg, num_classes)
 
 
 def test():

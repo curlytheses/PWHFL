@@ -1,27 +1,17 @@
-import os
 import sys
 import random
 import numpy as np
 import torch
-import logging
-import matplotlib.pyplot as plt
 import torchvision
 from pathlib import Path
 from torch.utils.data import Dataset
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torchvision import datasets, transforms
-from PIL import ImageFilter
 
-# Ensure we can import from two levels up
-sys.path.append(str(Path(__file__).resolve().parents[2]))
+# Locate the checkout root for direct-script execution
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from RAHFL.Dataset.helpers import TwoCropTransform, GaussianBlur, init_logs, mkdirs
 from RAHFL.Dataset.cifar import CIFAR10, CIFAR100
-from RAHFL.Dataset.dataaug import AugMixDataset
-from RAHFL.Dataset.sampling import iid_sampling, non_iid_dirichlet_sampling
-from RAHFL.Network.Models_Def.resnet import ResNet10, ResNet12
-from RAHFL.Network.Models_Def.shufflenet import ShuffleNetG2
-from RAHFL.Network.Models_Def.mobilnet_v2 import MobileNetV2
+from RAHFL.Dataset import dataaug as _dataaug_seed_compat  # noqa: F401 -- preserve legacy import-time RNG seeding
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -35,72 +25,12 @@ if torch.cuda.is_available():
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class TwoCropTransform:
-    """Create two crops of the same image."""
-    def __init__(self, transform, transform_weak):
-        self.transform = transform
-        self.transform_weak = transform_weak
-
-    def __call__(self, x):
-        return [self.transform(x), self.transform_weak(x)]
-
-
-class GaussianBlur:
-    """Gaussian blur augmentation in SimCLR https://arxiv.org/abs/2002.05709"""
-    def __init__(self, sigma=[.1, 2.]):
-        self.sigma = sigma
-
-    def __call__(self, x):
-        sigma = random.uniform(self.sigma[0], self.sigma[1])
-        return x.filter(ImageFilter.GaussianBlur(radius=sigma))
-
-
-def init_logs(log_level=logging.INFO, log_path: str = None, sub_name=None):
-    """
-    Initialize a logger that writes to PROJECT_PATH/Logs/.
-    """
-    logger = logging.getLogger(__name__)
-    logger.setLevel(log_level)
-
-    # Determine base directory for logs
-    if log_path is None:
-        log_dir = Path.cwd() / "Logs"
-    else:
-        log_dir = Path(log_path)
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    script_name = Path(sys.argv[0]).stem
-    if sub_name is None:
-        log_filename = f"{script_name}.log"
-    else:
-        log_filename = f"{script_name}_{sub_name}.log"
-
-    log_file_path = log_dir / log_filename
-    fh = logging.FileHandler(str(log_file_path), mode="w")
-    fh.setLevel(log_level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s"
-    )
-    fh.setFormatter(formatter)
-
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.addHandler(fh)
-
-    return logger
-
-
-def mkdirs(dirpath: str):
-    """
-    Create directories if they do not exist.
-    Accepts both string paths and Path-like.
-    """
-    Path(dirpath).mkdir(parents=True, exist_ok=True)
-
-
 class CIFAR10_C_origin(Dataset):
     def __init__(self, path: str, c_type=None, transform=None, corrupt_rate=0):
+        # Legacy argument retained for external callers; this reader selects all severities.
+        if corrupt_rate != 0:
+            import warnings
+            warnings.warn("CIFAR10_C_origin ignores corrupt_rate; use CIFAR_C for rate selection.", DeprecationWarning, stacklevel=2)
         base_path = Path(path)
         images = np.load(base_path / f"{c_type}.npy")
         labels = np.load(base_path / "labels.npy")
@@ -154,7 +84,11 @@ class CIFAR_C(Dataset):
         if self.corrupt_rate == 0:
             data = np.load(data_path / "clean.npy")
         else:
-            data = np.load(data_path / f"random_corrupt_{self.corrupt_rate}.npy")
+            filename = data_path / f"random_corrupt_{self.corrupt_rate}.npy"
+            if not filename.exists():
+                # Accept canonical CLI filenames (1.npy) as well as legacy 1.0.npy.
+                filename = data_path / f"random_corrupt_{float(self.corrupt_rate):g}.npy"
+            data = np.load(filename)
         target = np.load(data_path / "labels.npy")
 
         if self.dataidxs is not None:
@@ -350,94 +284,37 @@ def partition_data(
     noise_type=None,
     noise_rate=0
 ):
-    """
-    Partition the dataset indices into IID or non-IID splits.
-    """
-    data_path = Path(datadir)
-    if dataset == "cifar10":
-        X_train, y_train, X_test, y_test = load_cifar10c_data(data_path, corrupt_rate, test_corrupt_rate)
-    elif dataset == "cifar100":
-        X_train, y_train, X_test, y_test = load_cifar100_data(data_path, noise_type, noise_rate)
-    else:
-        raise ValueError(f"Unsupported dataset for partitioning: {dataset}")
-
-    if partition == "iid":
-        net_dataidx_map = iid_sampling(y_train, num_users)
-    elif partition == "noniid":
-        net_dataidx_map = non_iid_dirichlet_sampling(
-            y_train, num_classes, num_users, dirichlet_beta=dirichlet_beta
-        )
-    else:
-        raise ValueError(f"Unsupported partition type: {partition}")
-
-    return y_train, net_dataidx_map
+    """Compatibility entry point; implementation lives in Dataset.utils."""
+    from RAHFL.Dataset.utils import partition_data as implementation
+    return implementation(dataset, datadir, partition, num_classes, num_users, corrupt_rate, test_corrupt_rate, dirichlet_beta, noise_type, noise_rate)
 
 
 def generate_public_data_indexs(dataset: str, datadir: str, size: int):
-    """
-    Randomly select `size` indices from the training set of the given dataset.
-    """
-    data_path = Path(datadir)
-    if dataset == "cifar100":
-        X_train, y_train, X_test, y_test = load_cifar100_data(data_path)
-    else:
-        raise ValueError(f"Unsupported dataset for public indexing: {dataset}")
-
-    n_train = y_train.shape[0]
-    all_idxs = list(range(n_train))
-    return np.random.choice(all_idxs, size, replace=False)
+    """Compatibility entry point; implementation lives in Dataset.utils."""
+    from RAHFL.Dataset.utils import generate_public_data_indexs as implementation
+    return implementation(dataset, datadir, size)
 
 
 def load_cifar10c_data(datadir: Path, corrupt_rate: float, test_corrupt_rate: float):
-    """
-    Load CIFAR-10-C train and test using CIFAR_C class.
-    """
-    transform = transforms.Compose([transforms.ToTensor()])
-    cifar10_train_ds = CIFAR_C(str(datadir), train=True, transform=transform, corrupt_rate=corrupt_rate)
-    cifar10_test_ds = CIFAR_C(str(datadir), train=False, transform=transform, corrupt_rate=test_corrupt_rate)
-
-    X_train, y_train = cifar10_train_ds.data, cifar10_train_ds.target
-    X_test, y_test   = cifar10_test_ds.data, cifar10_test_ds.target
-    return X_train, y_train, X_test, y_test
+    """Compatibility entry point; implementation lives in Dataset.utils."""
+    from RAHFL.Dataset.utils import load_cifar10c_data as implementation
+    return implementation(datadir, corrupt_rate, test_corrupt_rate)
 
 
 def load_cifar10_data(datadir: Path, noise_type=None, noise_rate=0):
-    """
-    Load CIFAR-10 FL dataset (clean or noisy) using Cifar10FL class.
-    """
-    transform = transforms.Compose([transforms.ToTensor()])
-    cifar10_train_ds = Cifar10FL(
-        str(datadir), train=True, download=True,
-        transform=transform, noise_type=noise_type, noise_rate=noise_rate
-    )
-    cifar10_test_ds = Cifar10FL(
-        str(datadir), train=False, download=True, transform=transform
-    )
-
-    X_train, y_train = cifar10_train_ds.data, cifar10_train_ds.target
-    X_test, y_test   = cifar10_test_ds.data, cifar10_test_ds.target
-    return X_train, y_train, X_test, y_test
+    """Compatibility entry point; implementation lives in Dataset.utils."""
+    from RAHFL.Dataset.utils import load_cifar10_data as implementation
+    return implementation(datadir, noise_type, noise_rate)
 
 
 def load_cifar100_data(datadir: Path, noise_type=None, noise_rate=0):
-    """
-    Load CIFAR-100 FL dataset (clean or noisy) using Cifar100FL class.
-    """
-    transform = transforms.Compose([transforms.ToTensor()])
-    cifar100_train_ds = Cifar100FL(
-        str(datadir), train=True, download=True,
-        transform=transform, noise_type=noise_type, noise_rate=noise_rate
-    )
-    cifar100_test_ds = Cifar100FL(
-        str(datadir), train=False, download=True, transform=transform
-    )
-
-    X_train, y_train = cifar100_train_ds.data, cifar100_train_ds.target
-    X_test, y_test   = cifar100_test_ds.data, cifar100_test_ds.target
-    return X_train, y_train, X_test, y_test
+    """Compatibility entry point; implementation lives in Dataset.utils."""
+    from RAHFL.Dataset.utils import load_cifar100_data as implementation
+    return implementation(datadir, noise_type, noise_rate)
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
     # Example usage with Linux-style paths
     dataset_name = "cifar_10/CIFAR-10_styled_train"
     dataset_root = Path.cwd() / dataset_name
@@ -450,7 +327,7 @@ if __name__ == "__main__":
     label = cifar10styled.target
 
     # Display a few samples (assuming data shape is (N, 32, 32, 3))
-    label_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 
+    label_names = ['airplane', 'automobile', 'bird', 'cat', 'deer',
                    'dog', 'frog', 'horse', 'ship', 'truck']
 
     for j in range(min(5, len(data))):
@@ -463,3 +340,9 @@ if __name__ == "__main__":
     # Example for CIFAR100FL
     cifar100_test = Cifar100FL(root=str(dataset_root), train=False)
     print(f"Number of samples in CIFAR-100 FL test: {len(cifar100_test)}")
+
+# Public compatibility APIs: optional dataset readers remain available.
+__all__ = ["TwoCropTransform", "GaussianBlur", "init_logs", "mkdirs",
+           "CIFAR10_C_origin", "CIFAR_C", "CIFAR100_RandomC", "Cifar10FL", "Cifar100FL",
+           "partition_data", "generate_public_data_indexs", "load_cifar10c_data",
+           "load_cifar10_data", "load_cifar100_data"]

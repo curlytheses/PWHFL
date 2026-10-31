@@ -1,0 +1,7 @@
+-r requirements.txt
+scipy
+scikit-image>=0.19
+opencv-python-headless
+Wand
+# Optional legacy dataset visualization demo:
+matplotlib

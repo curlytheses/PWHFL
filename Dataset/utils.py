@@ -1,7 +1,5 @@
-import os
 import sys
 import torch
-import logging
 import random
 import numpy as np
 
@@ -10,23 +8,18 @@ import torch.utils.data as data
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import datasets, transforms
-from PIL import ImageFilter
 
-# Ensure we can import from two levels up
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+# Locate the checkout root for direct-script execution
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from RAHFL.Dataset.helpers import TwoCropTransform, GaussianBlur, init_logs as init_logs, mkdirs as mkdirs
 from RAHFL.Dataset.init_dataset import Cifar10FL, Cifar100FL, CIFAR_C
-from RAHFL.Network.Models_Def.resnet import ResNet10, ResNet12
-from RAHFL.Network.Models_Def.shufflenet import ShuffleNetG2
-from RAHFL.Network.Models_Def.mobilnet_v2 import MobileNetV2
+from RAHFL.Network.registry import create_model
 from RAHFL.Dataset.dataaug import AugMixDataset
 from RAHFL.Dataset.sampling import iid_sampling, non_iid_dirichlet_sampling
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Set a project-wide base path (assumes cwd is /content/drive/.../RAHFL)
-PROJECT_PATH = Path.cwd()
-
 # Reproducibility
 Seed = 0
 random.seed(Seed)
@@ -35,76 +28,6 @@ torch.manual_seed(Seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(Seed)
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-class TwoCropTransform:
-    """Create two crops of the same image"""
-    def __init__(self, transform, transform_weak):
-        self.transform = transform
-        self.transform_weak = transform_weak
-
-    def __call__(self, x):
-        return [self.transform(x), self.transform_weak(x)]
-
-
-class GaussianBlur:
-    """Gaussian blur augmentation in SimCLR https://arxiv.org/abs/2002.05709"""
-    def __init__(self, sigma=[.1, 2.]):
-        self.sigma = sigma
-
-    def __call__(self, x):
-        sigma = random.uniform(self.sigma[0], self.sigma[1])
-        return x.filter(ImageFilter.GaussianBlur(radius=sigma))
-
-
-def init_logs(log_level=logging.INFO, log_path: str = None, sub_name=None):
-    """
-    Initialize a logger that writes to PROJECT_PATH/Logs/.
-
-    :param log_level: Logging level.
-    :param log_path:    Relative or absolute path string where logs should be stored.
-                        If None, defaults to PROJECT_PATH / "Logs".
-    :param sub_name:    Optional string to append to the log filename.
-    :return:            Configured logger instance.
-    """
-    logger = logging.getLogger(__name__)
-    logger.setLevel(log_level)
-
-    # Determine the directory for logs
-    if log_path is None:
-        log_dir = PROJECT_PATH / "RAHFL" / "Logs"
-    else:
-        log_dir = Path(log_path)
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    script_name = Path(sys.argv[0]).stem
-    if sub_name is None:
-        log_filename = f"{script_name}.log"
-    else:
-        log_filename = f"{script_name}_{sub_name}.log"
-
-    log_file_path = log_dir / log_filename
-    fh = logging.FileHandler(str(log_file_path), mode="w")
-    fh.setLevel(log_level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s"
-    )
-    fh.setFormatter(formatter)
-
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.addHandler(fh)
-
-    return logger
-
-
-def mkdirs(dirpath: str):
-    """
-    Create directories if they do not exist.
-    Accepts both string paths and Path-like.
-    """
-    Path(dirpath).mkdir(parents=True, exist_ok=True)
 
 
 def load_cifar10c_data(datadir: Path, corrupt_rate: float, test_corrupt_rate: float):
@@ -173,9 +96,13 @@ def partition_data(
     """
     data_path = Path(datadir)
     if dataset == "cifar10":
-        X_train, y_train, X_test, y_test = load_cifar10c_data(data_path, corrupt_rate, test_corrupt_rate)
+        _, y_train, _, _ = load_cifar10c_data(data_path, corrupt_rate, test_corrupt_rate)
+    elif dataset == "cifar10_clean":
+        _, y_train, _, _ = load_cifar10_data(data_path, noise_type, noise_rate)
     elif dataset == "cifar100":
-        X_train, y_train, X_test, y_test = load_cifar100_data(data_path, noise_type, noise_rate)
+        _, y_train, _, _ = load_cifar100_data(data_path, noise_type, noise_rate)
+    else:
+        raise ValueError(f"Unsupported partition dataset: {dataset}")
 
     if partition == "iid":
         net_dataidx_map = iid_sampling(y_train, num_users)
@@ -183,6 +110,9 @@ def partition_data(
         net_dataidx_map = non_iid_dirichlet_sampling(
             y_train, num_classes, num_users, dirichlet_beta=dirichlet_beta
         )
+
+    else:
+        raise ValueError(f"Unsupported partition: {partition}")
 
     return y_train, net_dataidx_map
 
@@ -193,7 +123,11 @@ def generate_public_data_indexs(dataset: str, datadir: str, size: int):
     """
     data_path = Path(datadir)
     if dataset == "cifar100":
-        X_train, y_train, X_test, y_test = load_cifar100_data(data_path)
+        _, y_train, _, _ = load_cifar100_data(data_path)
+    elif dataset == "cifar10_clean":
+        _, y_train, _, _ = load_cifar10_data(data_path)
+    else:
+        raise ValueError(f"Unsupported public dataset: {dataset}")
     n_train = y_train.shape[0]
     all_idxs = list(range(n_train))
     return np.random.choice(all_idxs, size, replace=False)
@@ -207,7 +141,8 @@ def get_dataloader(
     corrupt_rate,
     test_corrupt_rate,
     dataidxs=None,
-    augmix_module=None
+    augmix_module=None,
+    augmix_all_ops=False
 ):
     """
     Create PyTorch DataLoaders for CIFAR-10, CIFAR-100, or TinyImageNet.
@@ -217,8 +152,17 @@ def get_dataloader(
     """
     data_path = Path(datadir)
 
+    if dataset == "cifar10_clean" and (corrupt_rate != 0 or test_corrupt_rate != 0):
+        raise ValueError("cifar10_clean requires both corruption rates to be zero")
+
+    def cifar10_dataset(root, **kwargs):
+        if dataset == "cifar10_clean":
+            kwargs.pop("corrupt_rate", None)
+            return Cifar10FL(root, download=True, **kwargs)
+        return CIFAR_C(root, **kwargs)
+
     # ─── CIFAR-10 Branch ───────────────────────────────────────────────────────
-    if dataset == "cifar10":
+    if dataset in ("cifar10", "cifar10_clean"):
         if augmix_module is None:
             transform_train = transforms.Compose([
                 transforms.ToTensor(),
@@ -237,7 +181,7 @@ def get_dataloader(
                     std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
                 )
             ])
-            train_ds = CIFAR_C(
+            train_ds = cifar10_dataset(
                 str(data_path),
                 dataidxs=dataidxs,
                 train=True,
@@ -280,14 +224,14 @@ def get_dataloader(
                     std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
                 )
             ])
-            train_ds = CIFAR_C(
+            train_ds = cifar10_dataset(
                 str(data_path),
                 dataidxs=dataidxs,
                 train=True,
                 transform=TwoCropTransform(transform_train, transform_train_weak),
                 corrupt_rate=corrupt_rate
             )
-            train_ds = AugMixDataset(train_ds, preprocess, jsd_or_nojsd=augmix_module)
+            train_ds = AugMixDataset(train_ds, preprocess, jsd_or_nojsd=augmix_module, all_ops=augmix_all_ops)
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
@@ -296,7 +240,7 @@ def get_dataloader(
                 std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
             )
         ])
-        test_ds = CIFAR_C(
+        test_ds = cifar10_dataset(
             str(data_path),
             train=False,
             transform=transform_test,
@@ -345,7 +289,7 @@ def get_dataloader(
                 transform=transform_train,
                 corrupt_rate=corrupt_rate
             )
-            train_ds = AugMixDataset(train_ds, preprocess, jsd_or_nojsd=augmix_module)
+            train_ds = AugMixDataset(train_ds, preprocess, jsd_or_nojsd=augmix_module, all_ops=augmix_all_ops)
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
@@ -413,34 +357,6 @@ def init_nets(n_parties: int, nets_name_list, num_classes=10):
     """
     Initialize a dictionary of networks for each party.
     """
-    nets_list = {net_i: None for net_i in range(n_parties)}
-    for net_i in range(n_parties):
-        net_name = nets_name_list[net_i]
-        if net_name == "ResNet10":
-            net = ResNet10(num_classes=num_classes)
-        elif net_name == "ResNet12":
-            net = ResNet12(num_classes=num_classes)
-        elif net_name == "ShuffleNet":
-            net = ShuffleNetG2(num_classes=num_classes)
-        elif net_name == "Mobilenetv2":
-            net = MobileNetV2(num_classes=num_classes)
-        else:
-            raise ValueError(f"Unknown network name: {net_name}")
-
-        nets_list[net_i] = net
-
-    return nets_list
-
-
-# Example usage (commented out):
-# if __name__ == "__main__":
-#     logger = init_logs()
-#     public_data_indexs = generate_public_data_indexs(dataset="cifar100", datadir="./cifar_100", size=5000)
-#     train_dl, test_dl, train_ds, test_ds = get_dataloader(
-#         dataset="cifar100",
-#         datadir="./cifar_100",
-#         train_bs=256,
-#         test_bs=512,
-#         dataidxs=public_data_indexs
-#     )
-#     print(len(train_ds))
+    if n_parties != len(nets_name_list):
+        raise ValueError("n_parties must match nets_name_list length")
+    return {i: create_model(name, num_classes) for i, name in enumerate(nets_name_list)}

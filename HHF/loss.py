@@ -1,8 +1,6 @@
 import torch
 import torch.nn.functional as F
 
-eps = 1e-7
-
 class SupConLoss(torch.nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""

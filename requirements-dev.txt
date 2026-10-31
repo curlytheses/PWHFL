@@ -1,0 +1,3 @@
+-r requirements-generation.txt
+pytest>=8
+ruff

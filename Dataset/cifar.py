@@ -114,6 +114,10 @@ class CIFAR10(data.Dataset):
                 self.train_noisy_labels = [i[0] for i in self.train_noisy_labels]
                 _train_labels = [i[0] for i in self.train_labels]
                 self.noise_or_not = np.transpose(self.train_noisy_labels) == np.transpose(_train_labels)
+            else:
+                self.train_noisy_labels = list(self.train_labels)
+                self.actual_noise_rate = 0.0
+                self.noise_or_not = np.ones(len(self.train_labels), dtype=bool)
         else:
             f = self.test_list[0][0]
             file = os.path.join(self.root, self.base_folder, f)
@@ -448,6 +452,9 @@ def noisify_pairflip(y_train, noise, random_state=None, nb_classes=10):
     """mistakes:
         flip in the pair
     """
+    if not 0 <= noise <= 1:
+        raise ValueError("noise must be in [0, 1]")
+    actual_noise = 0.0
     P = np.eye(nb_classes)
     n = noise
 
@@ -472,6 +479,9 @@ def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=1
     """mistakes:
         flip in the symmetric way
     """
+    if not 0 <= noise <= 1:
+        raise ValueError("noise must be in [0, 1]")
+    actual_noise = 0.0
     P = np.ones((nb_classes, nb_classes))
     n = noise
     P = (n / (nb_classes - 1)) * P
@@ -495,10 +505,12 @@ def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=1
 
 def noisify(dataset='mnist', nb_classes=10, train_labels=None, noise_type=None, noise_rate=0, random_state=0):
     if noise_type == 'pairflip':
-        train_noisy_labels, actual_noise_rate = noisify_pairflip(train_labels, noise_rate, random_state=0, nb_classes=nb_classes)
-    if noise_type == 'symmetric':
-        train_noisy_labels, actual_noise_rate = noisify_multiclass_symmetric(train_labels, noise_rate, random_state=0, nb_classes=nb_classes)
-    if noise_type == None:
+        train_noisy_labels, actual_noise_rate = noisify_pairflip(train_labels, noise_rate, random_state=random_state, nb_classes=nb_classes)
+    elif noise_type == 'symmetric':
+        train_noisy_labels, actual_noise_rate = noisify_multiclass_symmetric(train_labels, noise_rate, random_state=random_state, nb_classes=nb_classes)
+    elif noise_type in (None, 'clean'):
         train_noisy_labels = train_labels
         actual_noise_rate = 0
+    else:
+        raise ValueError(f"Unsupported noise_type {noise_type!r} for dataset {dataset!r}")
     return train_noisy_labels, actual_noise_rate

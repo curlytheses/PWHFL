@@ -1,0 +1,8 @@
+# Use the matching CPU/CUDA PyTorch installation for your machine.
+# The cleanup and validation suite was tested with torch 2.5.1 / torchvision 0.20.1.
+torch>=2.5.1
+torchvision>=0.20.1
+numpy>=1.24
+Pillow>=9.1
+six>=1.16
+tqdm>=4.64

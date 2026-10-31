@@ -5,7 +5,6 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
 import sys
-import random
 import numpy as np
 import torch
 import torch.backends.cudnn
@@ -13,18 +12,19 @@ import torch.optim as optim
 import torch.nn as nn
 
 from pathlib import Path
-from numpy import *
+# The former NumPy wildcard import bound `random` to numpy.random. Keep that
+# binding explicitly so cleanup does not change the legacy seed sequence.
+from numpy import mean, random
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Ensure Python can import from the parent directories
-sys.path.append("..")
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from RAHFL.Dataset.utils import init_logs, get_dataloader, init_nets, mkdirs, partition_data
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Set ROOT_DIR to the current working directory (should be /content/drive/MyDrive/Colab Notebooks/RAHFL)
-ROOT_DIR = Path.cwd()
+# Resolve data and checkpoint paths relative to the checkout.
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global Parameters
@@ -52,7 +52,7 @@ N_Participants  = len(Nets_Name_List)
 
 # Dataset Setting
 Private_Dataset_Name = "cifar10"
-Private_Dataset_Dir  = ROOT_DIR / "RAHFL" / "Dataset/cifar_10_c" 
+Private_Dataset_Dir  = ROOT_DIR / "Dataset/cifar_10_c"
 Private_Data_Len     = 10000
 Private_Output_Channel = 10
 
@@ -62,8 +62,7 @@ Noniid_Dirichlet_Beta = 0    # iid:0 ; noniid:1.0
 # Model Save Setting
 # Build MODEL_SAVE_DIR as a pathlib.Path under ROOT_DIR
 Model_Save_Dir = (
-    ROOT_DIR / "RAHFL"
-    / "Network"
+    ROOT_DIR / "Network"
     / f"Model_Storage_{Model_setting}_4client"
     / f"{Private_Dataset_Name}_{Data_Partition}_{Noniid_Dirichlet_Beta}"
     / f"random_corrupt_{Private_Corrupt_Rate}"
@@ -167,7 +166,6 @@ if __name__ == "__main__":
     logger.info("Initialize Participants' Data idxs")
 
     if Data_Partition == "noniid":
-        net_datanum_map = {}
         _, net_dataidx_map = partition_data(
             dataset=Private_Dataset_Name,
             datadir=str(Private_Dataset_Dir),

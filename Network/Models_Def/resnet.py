@@ -4,7 +4,6 @@ Reference:
 [1] Kaiming He, Xiangyu Zhang, Shaoqing Ren, Jian Sun
     Deep Residual Learning for Image Recognition. arXiv:1512.03385
 '''
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -114,6 +113,15 @@ class ResNet(nn.Module):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
+    def forward_logits(self, x):
+        """Evaluation-only fast path; retains all projector checkpoint parameters.
+
+        The default forward still computes and returns both outputs, preserving
+        training-time BatchNorm updates and the original model interface.
+        """
+        out = self.backbone(x)
+        return self.linear(out.view(out.size(0), -1))
+
     def forward(self, x):
         out = self.backbone(x)
         out = out.view(out.size(0), -1)
@@ -128,56 +136,26 @@ def ResNet10(num_classes=10):
 def ResNet12(num_classes=10):
     return ResNet(BasicBlock, [2, 1, 1, 1],num_classes)
 
-def ResNet18():
-    return ResNet(BasicBlock, [2, 2, 2, 2])
+def ResNet18(num_classes=10):
+    return ResNet(BasicBlock, [2, 2, 2, 2], num_classes)
 
-def ResNet34():
-    return ResNet(BasicBlock, [3, 4, 6, 3])
+def ResNet34(num_classes=10):
+    return ResNet(BasicBlock, [3, 4, 6, 3], num_classes)
 
-def ResNet50():
-    return ResNet(Bottleneck, [3, 4, 6, 3])
+def ResNet50(num_classes=10):
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes)
 
-def ResNet101():
-    return ResNet(Bottleneck, [3, 4, 23, 3])
+def ResNet101(num_classes=10):
+    return ResNet(Bottleneck, [3, 4, 23, 3], num_classes)
 
-def ResNet152():
-    return ResNet(Bottleneck, [3, 8, 36, 3])
+def ResNet152(num_classes=10):
+    return ResNet(Bottleneck, [3, 8, 36, 3], num_classes)
 
 def test():
     net = ResNet18()
-    y = net(torch.randn(1, 3, 32, 32))
-    print(y.size())
+    logits, embedding = net(torch.randn(2, 3, 32, 32))
+    print(logits.shape, embedding.shape)
 
-#from torchsummary import summary
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-if __name__ =='__main__':
-    net = ResNet10()
-    print(net.parameters('linear'))
-    print(net.named_parameters())
-    for i in net.named_parameters():
-        print(i)
-    for name, param in net.named_parameters():
-        print(name)
-    # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    # # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
-    # # device_ids = [0,1,2,3,4,5,6,7]
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-    # device_ids = [0,1,2,3]
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # torch.backends.cudnn.benchmark = True
-    # network = nn.DataParallel(net, device_ids=device_ids).to(device)
-    # for para in network.module.bn_projector.parameters():
-    #     para
-    #     para.requires_grad = False
-    # print(network.parameters('bn_projector'))
-    # for para in network.parameters('bn_projector'):
-    #     print(para)
-        # if "fc1" in name:
-        #     param.requires_grad = False
-    # print(net.state_dict)
-    # y = net(torch.randn(2, 3, 32, 32),private=True)
-    # summary(net.to(device), input_size=(3, 32, 32))
-    # print(y.size())
-    # net = ResNet12()
-    # y = net(torch.randn(2, 3, 32, 32),private=False)
-    # print(y.size())
+
+if __name__ == '__main__':
+    test()

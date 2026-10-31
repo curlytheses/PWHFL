@@ -1,9 +1,8 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 
-import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-import os.path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 import torchvision.datasets as dset
 import torchvision.transforms as trn
@@ -65,7 +64,7 @@ def plasma_fractal(mapsize=32, wibbledecay=3):
     'mapsize' must be a power of two.
     """
     assert (mapsize & (mapsize - 1) == 0)
-    maparray = np.empty((mapsize, mapsize), dtype=np.float_)
+    maparray = np.empty((mapsize, mapsize), dtype=np.float64)
     maparray[0, 0] = 0
     stepsize = mapsize
     wibble = 100
@@ -232,11 +231,17 @@ def fog(x, severity=1):
     return np.clip(x * max_val / (max_val + c[0]), 0, 1) * 255
 
 
-def frost(x, severity=1):
+def frost(x, severity=1, texture_count=None):
     c = [(1, 0.2), (1, 0.3), (0.9, 0.4), (0.85, 0.4), (0.75, 0.45)][severity - 1]
-    idx = np.random.randint(5)
-    filename = ['RAHFL\\Dataset\\frost1.png', 'RAHFL\\Dataset\\frost2.png', 'RAHFL\\Dataset\\frost3.png', 'RAHFL\\Dataset\\frost4.jpg', 'RAHFL\\Dataset\\frost5.jpg', 'RAHFL\\Dataset\\frost6.jpg'][idx]
+    texture_count = FROST_TEXTURE_COUNT if texture_count is None else texture_count
+    if texture_count not in range(1, 7):
+        raise ValueError("texture_count must be between 1 and 6")
+    textures = ['frost1.png', 'frost2.png', 'frost3.png', 'frost4.jpg', 'frost5.jpg', 'frost6.jpg']
+    idx = np.random.randint(texture_count)
+    filename = str(Path(__file__).resolve().parent / textures[idx])
     frost = cv2.imread(filename)
+    if frost is None:
+        raise FileNotFoundError(filename)
     frost = cv2.resize(frost, (0, 0), fx=0.2, fy=0.2)
     # randomly crop and convert to rgb
     x_start, y_start = np.random.randint(0, frost.shape[0] - 32), np.random.randint(0, frost.shape[1] - 32)
@@ -418,11 +423,6 @@ import collections
 """
 Generating corrupt dataset
 """
-seed = 0
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-
 # corrupt ways:
 d = collections.OrderedDict()
 d['Gaussian Noise'] = gaussian_noise
@@ -445,57 +445,57 @@ d['Gaussian Blur'] = gaussian_blur
 d['Spatter'] = spatter
 d['Saturate'] = saturate
 
-Make_Corrupt_Dataset = 'cifar100' #['cifar10', 'cifar100']
-Train_Dataset = True
-APPLY_CORRUPTION = False
-Corrupt_Rate = 1
+# Legacy sampling defaults are intentionally preserved. The complete asset and
+# severity ranges are available explicitly, without changing old experiments.
+FROST_TEXTURE_COUNT = 5
 
-for Train_Dataset in [True, False]:
-    print('Using ' + Make_Corrupt_Dataset + ' data')
-    if Make_Corrupt_Dataset == 'cifar10':
-        origin_data_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "cifar_10"))
-        print(f'Loading CIFAR-10 from: {os.path.abspath(origin_data_root)}')
-        origin_data = dset.CIFAR10(root=origin_data_root, train=Train_Dataset, download=True)
-    elif Make_Corrupt_Dataset == 'cifar100':
-        origin_data_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "cifar_100"))
-        print(f'Loading CIFAR-100 from: {os.path.abspath(origin_data_root)}')
-        origin_data = dset.CIFAR100(root=origin_data_root, train=Train_Dataset, download=True)
-    convert_img = trn.Compose([trn.ToTensor(), trn.ToPILImage()])
-    
-    print('Generating corrupt data idxs')
-    all_items_num = origin_data.data.shape[0]
-    if APPLY_CORRUPTION:
-        corrupt_items_num = int(Corrupt_Rate * all_items_num)
-        all_idxs = [i for i in range(all_items_num)]
-        corrupt_idxs = np.random.choice(all_idxs, corrupt_items_num, replace=False)
-    else:
-        corrupt_idxs = set()
-    
-    print('Creating corrupt images')
-    image_c, labels = [], []  
-    for index, (img, label) in enumerate(zip(origin_data.data, origin_data.targets)):
-        labels.append(label)
-        if APPLY_CORRUPTION:
-            method_name = random.sample(list(d.keys()), 1)[0]
-            severity = np.random.randint(1, 5)
-            corruption = lambda clean_img: d[method_name](clean_img, severity)
-        if APPLY_CORRUPTION and index in corrupt_idxs:
-            image_c.append(np.uint8(corruption(convert_img(img))))
-        else:
-            image_c.append(img)
-    
-    print('Saving corrupt images')
-    if Train_Dataset:
-        train_or_test = 'train'
-    else:
-        train_or_test = 'test'
-    save_path = origin_data_root + '_c\\' + train_or_test
-    mkdirs(save_path)
-    if APPLY_CORRUPTION:
-        file_name = 'random_corrupt_' + str(Corrupt_Rate) + '.npy'
-    else:
-        file_name = 'clean.npy'
-    np.save(save_path + '\\' + file_name,
-            np.array(image_c).astype(np.uint8))
-    np.save(save_path + '\\labels.npy',
-            np.array(labels).astype(np.uint8))
+
+def generate(dataset='cifar100', apply_corruption=False, corrupt_rate=1,
+             max_severity=4, frost_textures=5, seed=0):
+    global FROST_TEXTURE_COUNT
+    if dataset not in ('cifar10', 'cifar100'):
+        raise ValueError("dataset must be cifar10 or cifar100")
+    if not 0 <= corrupt_rate <= 1 or max_severity not in range(1, 6) or frost_textures not in range(1, 7):
+        raise ValueError("Invalid corruption rate, severity or frost texture count")
+    FROST_TEXTURE_COUNT = frost_textures
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    for train in (True, False):
+        origin_data_root = Path(__file__).resolve().parent / ('cifar_10' if dataset == 'cifar10' else 'cifar_100')
+        factory = dset.CIFAR10 if dataset == 'cifar10' else dset.CIFAR100
+        origin_data = factory(root=str(origin_data_root), train=train, download=True)
+        convert_img = trn.Compose([trn.ToTensor(), trn.ToPILImage()])
+        count = origin_data.data.shape[0]
+        corrupt_idxs = np.random.choice(list(range(count)), int(corrupt_rate * count), replace=False) if apply_corruption else set()
+        image_c, labels = [], []
+        for index, (img, label) in enumerate(zip(origin_data.data, origin_data.targets)):
+            labels.append(label)
+            # Preserve RNG draws for ALL images in corruption mode, including clean ones.
+            if apply_corruption:
+                method_name = random.sample(list(d.keys()), 1)[0]
+                severity = np.random.randint(1, max_severity + 1)
+            if apply_corruption and index in corrupt_idxs:
+                image_c.append(np.uint8(d[method_name](convert_img(img), severity)))
+            else:
+                image_c.append(img)
+        save_path = origin_data_root.with_name(origin_data_root.name + '_c') / ('train' if train else 'test')
+        mkdirs(save_path)
+        filename = f'random_corrupt_{corrupt_rate:g}.npy' if apply_corruption else 'clean.npy'
+        np.save(save_path / filename, np.array(image_c).astype(np.uint8))
+        np.save(save_path / 'labels.npy', np.array(labels).astype(np.uint8))
+        print(f'Saved {len(labels)} samples to {save_path / filename}')
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Prepare existing private/public CIFAR data')
+    parser.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar100')
+    parser.add_argument('--apply-corruption', action='store_true')
+    parser.add_argument('--corrupt-rate', type=float, default=1)
+    parser.add_argument('--max-severity', type=int, choices=range(1, 6), default=4)
+    parser.add_argument('--frost-textures', type=int, choices=range(1, 7), default=5)
+    parser.add_argument('--seed', type=int, default=0)
+    args = parser.parse_args()
+    generate(args.dataset, args.apply_corruption, args.corrupt_rate,
+             args.max_severity, args.frost_textures, args.seed)

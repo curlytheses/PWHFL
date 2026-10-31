@@ -1,8 +1,7 @@
-from __future__ import print_function
+from pathlib import Path
 
-import os
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from RAHFL.Dataset import augmentations
 import numpy as np
 
@@ -18,7 +17,7 @@ torch.manual_seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
 
-def aug(image, preprocess):
+def aug(image, preprocess, all_ops=False):
   """Perform AugMix augmentations and compute mixture.
 
   Args:
@@ -31,7 +30,6 @@ def aug(image, preprocess):
   mixture_width = 3
   mixture_depth = -1
   aug_severity = 3
-  all_ops = False
 
   aug_list = augmentations.augmentations
   if all_ops:
@@ -58,19 +56,24 @@ def aug(image, preprocess):
 class AugMixDataset(Dataset):
   """Dataset wrapper to perform AugMix augmentation."""
 
-  def __init__(self, dataset, preprocess, jsd_or_nojsd='jsd'):
+  def __init__(self, dataset, preprocess, jsd_or_nojsd='jsd', all_ops=False):
+    if jsd_or_nojsd not in ('jsd', 'onejsd', 'nojsd'):
+      raise ValueError(f"Unsupported AugMix mode: {jsd_or_nojsd}")
     self.dataset = dataset
     self.preprocess = preprocess
     self.jsd_or_nojsd = jsd_or_nojsd
+    self.all_ops = all_ops
 
   def __getitem__(self, i):
     x, y = self.dataset[i]
-    if self.jsd_or_nojsd == 'jsd' or 'onejsd':
+    # CIFAR-10 supplies two crops; public CIFAR-100 can supply one PIL image.
+    original, weak = (x[0], x[1]) if isinstance(x, (list, tuple)) else (x, x)
+    if self.jsd_or_nojsd in ('jsd', 'onejsd'):
       # Only apply aug() to the first image crop
-      im_tuple = (self.preprocess(x[0]), aug(x[0], self.preprocess), aug(x[0], self.preprocess), self.preprocess(x[1]))
+      im_tuple = (self.preprocess(original), aug(original, self.preprocess, self.all_ops), aug(original, self.preprocess, self.all_ops), self.preprocess(weak))
       return im_tuple, y
     else:
-      return aug(x, self.preprocess), y
+      return aug(original, self.preprocess, self.all_ops), y
 
   def __len__(self):
     return len(self.dataset)

@@ -8,14 +8,12 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from pathlib import Path
-from tqdm import tqdm
 
-sys.path.append("..")
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from RAHFL.Dataset.utils import (
-    partition_data, get_dataloader, init_nets,
-    generate_public_data_indexs, mkdirs, init_logs
+    get_dataloader, init_nets,
+    generate_public_data_indexs, init_logs
 )
 from RAHFL.HHF.loss import DCLLoss, SupConLoss
 
@@ -23,7 +21,7 @@ from RAHFL.HHF.loss import DCLLoss, SupConLoss
 # GLOBAL CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-ROOT_DIR = Path.cwd()
+ROOT_DIR = Path(__file__).resolve().parents[1]
 os.environ["CUDA_DEVICE_ORDER"]    = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -647,7 +645,7 @@ def run_experiment(config,
     cl_module   = config.get('cl_module',        'dcl')
     do_collab   = config.get('do_collab',         True)
     fixed_lam   = config.get('jsd_lambda_fixed',  None)
-    augmix_mod  = 'jsd' if cl_module in ('supcon', 'dcl') else None
+    augmix_mod = 'jsd' if config.get('use_jsd', cl_module in ('supcon', 'dcl')) else None
 
     # Persistent collaborative optimizers (one per client)
     collab_opts = [
@@ -698,7 +696,7 @@ def run_experiment(config,
 
             ce_ema = ce_ema_init
             for _ in range(local_epochs):
-                ce_ema, _ = local_train_epoch(
+                ce_ema, local_loss = local_train_epoch(
                     network    = network,
                     dataloader = train_dl,
                     optimizer  = local_opt,
@@ -707,6 +705,7 @@ def run_experiment(config,
                     cl_module  = cl_module,
                     fixed_lambda = fixed_lam,
                 )
+            print(f"      Client {p} local loss: {local_loss:.6f}")
             # Write updated weights back to net_list
             net_list[p] = network.module
 
@@ -734,40 +733,20 @@ def run_component_ablation():
     print("="*70)
 
     configs = [
-        #("Baseline (no FL)",
-        # {'do_collab': False, 'cl_module': 'none',
-        #  'weight_strategy': 'uniform',
-        #  'use_mce': False, 'use_arc': False}),
-
-        #("+ HFL (symmetric)",
-        # {'do_collab': True,  'cl_module': 'none',
-        #  'weight_strategy': 'uniform',
-        #  'use_mce': False, 'use_arc': False}),
-
-        #("+ AsymHFL (RAHFL base)",
-        # {'do_collab': True,  'cl_module': 'none',
-        #  'weight_strategy': 'binary_current',
-        #  'use_mce': False, 'use_arc': False}),
-
-        #("+ MCE",
-        # {'do_collab': True,  'cl_module': 'none',
-        #  'weight_strategy': 'binary_current',
-        #  'use_mce': True,  'use_arc': False}),
-
-        #("+ ADA-JSD",
-        # {'do_collab': True,  'cl_module': 'none',
-        #  'weight_strategy': 'binary_current',
-        #  'use_mce': True,  'use_arc': False}),
-
-        #("+ DCL",
-        # {'do_collab': True,  'cl_module': 'dcl',
-        #  'weight_strategy': 'binary_current',
-        #  'use_mce': True,  'use_arc': False}),
-
-        #("+ PWKT (Full APEX-FL)",
-        # {'do_collab': True,  'cl_module': 'dcl',
-        #  'weight_strategy': 'pwkt',
-        #  'use_mce': True,  'use_arc': True}),
+        ("Baseline (no FL)", {'do_collab': False, 'cl_module': 'none', 'use_jsd': False,
+                              'weight_strategy': 'uniform', 'use_mce': False, 'use_arc': False}),
+        ("+ HFL (symmetric)", {'cl_module': 'none', 'use_jsd': False,
+                               'weight_strategy': 'uniform', 'use_mce': False, 'use_arc': False}),
+        ("+ AsymHFL", {'cl_module': 'none', 'use_jsd': False,
+                        'weight_strategy': 'binary_current', 'use_mce': False, 'use_arc': False}),
+        ("+ MCE", {'cl_module': 'none', 'use_jsd': False,
+                    'weight_strategy': 'binary_current', 'use_mce': True, 'use_arc': False}),
+        ("+ ADA-JSD", {'cl_module': 'none', 'use_jsd': True,
+                        'weight_strategy': 'binary_current', 'use_mce': True, 'use_arc': False}),
+        ("+ DCL", {'cl_module': 'dcl', 'use_jsd': True,
+                    'weight_strategy': 'binary_current', 'use_mce': True, 'use_arc': False}),
+        ("+ PWKT + ARC", {'cl_module': 'dcl', 'use_jsd': True,
+                           'weight_strategy': 'pwkt', 'use_mce': True, 'use_arc': True}),
     ]
 
     results = {}
@@ -801,7 +780,7 @@ def run_component_ablation():
 # ABLATION TABLE 2: PWKT DISTRIBUTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_pwkt_ablation():
+def run_pwkt_ablation(include_reference=False):
     """
     Table tab:ablation_pwkt
     PWKT Transfer Distribution Comparison at xi=0.5.
@@ -827,10 +806,12 @@ def run_pwkt_ablation():
          {'weight_strategy': 'softmax_peak',
           'use_mce': True, 'cl_module': 'dcl', 'use_arc': False}),
 
-        #("PWKT: peak ACC + Heaviside (APEX-FL)",
-        # {'weight_strategy': 'pwkt',
-        #  'use_mce': True, 'cl_module': 'dcl', 'use_arc': True}),
     ]
+
+    if include_reference:
+        configs.append(("PWKT: peak ACC + Heaviside (APEX-FL)",
+                        {'weight_strategy': 'pwkt', 'use_mce': True,
+                         'cl_module': 'dcl', 'use_arc': True}))
 
     results = {}
     base_clean = base_corrupt = None
@@ -858,7 +839,7 @@ def run_pwkt_ablation():
 # ABLATION TABLE 3: ADA-JSD STATIC vs ADAPTIVE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_adajsd_ablation():
+def run_adajsd_ablation(include_reference=False):
     """
     Table tab:ablation_adajsd
     ADA-JSD Static vs. Adaptive at xi in {0, 0.5, 1}.
@@ -871,8 +852,10 @@ def run_adajsd_ablation():
         ("Static λ=6.0",                6.0),
         ("Static λ=12.0 (RAHFL base)", 12.0),
         ("Static λ=18.0",               18.0),
-        #("ADA-JSD adaptive (APEX-FL)",  None),   # None = use adaptive
     ]
+
+    if include_reference:
+        lambda_configs.append(("ADA-JSD adaptive (APEX-FL)", None))
 
     xi_list = [0, 0.5, 1]
     results = {lbl: {} for lbl, _ in lambda_configs}
@@ -915,7 +898,7 @@ def run_adajsd_ablation():
 # ABLATION TABLE 4: MCE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_mce_ablation():
+def run_mce_ablation(include_reference=False):
     """
     Table tab:ablation_mce
     MCE Fixed vs. Adaptive at xi_pub=0.5.
@@ -937,9 +920,10 @@ def run_mce_ablation():
         ("V=2, tau=0.65 (flip + adaptive temp)",
          {'use_mce': True,  'mce_n_crops': 2, 'mce_temp': 0.65}),
 
-        #("Adaptive V, adaptive tau (APEX-FL)",
-        # {'use_mce': True}),   # uses hp defaults from xi_pub=0.5
     ]
+
+    if include_reference:
+        configs.append(("Adaptive V, adaptive tau (APEX-FL)", {'use_mce': True}))
 
     results = {}
     for label, mce_cfg in configs:
@@ -964,7 +948,7 @@ def run_mce_ablation():
 # ABLATION TABLE 5: DCL STRATEGY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_dcl_ablation():
+def run_dcl_ablation(include_reference=False):
     """
     Table tab:ablation_dcl
     DCL Strategy Comparison at xi=0.5.
@@ -976,8 +960,10 @@ def run_dcl_ablation():
     configs = [
         ("w/o SCL (no contrastive)",       {'cl_module': 'none'}),
         ("SupCon (2-view, strong pairs)",   {'cl_module': 'supcon'}),
-        #("DCL 3-view (APEX-FL)",           {'cl_module': 'dcl'}),
     ]
+
+    if include_reference:
+        configs.append(("DCL 3-view (APEX-FL)", {'cl_module': 'dcl'}))
 
     results   = {}
     base_ca   = None
@@ -1029,7 +1015,15 @@ def _print_table_header(name, results):
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description="Run selected ablation tables")
+    parser.add_argument('--tables', nargs='+', choices=['component', 'pwkt', 'adajsd', 'mce', 'dcl', 'all'],
+                        default=['pwkt', 'adajsd', 'mce', 'dcl'])
+    parser.add_argument('--include-reference', action='store_true',
+                        help='Include the previously commented full-method reference rows')
+    args = parser.parse_args(argv)
+
     logger = init_logs()
     logger.info("APEX-FL Ablation Study — Full Runner (FIXED)")
     logger.info(f"xi: priv={ABLATION_XI_PRIV}, "
@@ -1065,52 +1059,34 @@ def main():
     )
     diagnose_dataloader_format(dummy_pub_dl, "public loader (no augmix)")
 
-    all_results = {}
+    runners = {
+        'component': run_component_ablation,
+        'pwkt': lambda: run_pwkt_ablation(args.include_reference),
+        'adajsd': lambda: run_adajsd_ablation(args.include_reference),
+        'mce': lambda: run_mce_ablation(args.include_reference),
+        'dcl': lambda: run_dcl_ablation(args.include_reference),
+    }
+    selected = list(runners) if 'all' in args.tables else list(dict.fromkeys(args.tables))
+    all_results = {name: runners[name]() for name in selected}
 
-    #print("\n[1/5] Component-Level Ablation")
-    #all_results['component'] = run_component_ablation()
-
-    print("\n[2/5] PWKT Transfer Distribution Comparison")
-    all_results['pwkt'] = run_pwkt_ablation()
-
-    print("\n[3/5] ADA-JSD Static vs. Adaptive")
-    all_results['adajsd'] = run_adajsd_ablation()
-
-    print("\n[4/5] MCE Fixed vs. Adaptive")
-    all_results['mce'] = run_mce_ablation()
-
-    print("\n[5/5] DCL Strategy Comparison")
-    all_results['dcl'] = run_dcl_ablation()
-
-    # ── Final consolidated summary ────────────────────────────────────────────
+    # Preserve the consolidated console summary for the selected tables.
     print("\n" + "═"*70)
     print("  FINAL CONSOLIDATED RESULTS SUMMARY")
     print("═"*70)
-
-    #print("\n▶ TABLE 1 — Component Ablation (Corrupt Avg %)")
-    #for lbl, r in all_results['component'].items():
-    #    print(f"  {lbl:<35} | {r['corrupt_avg']:.2f}%")
-
-    print("\n▶ TABLE 2 — PWKT Distribution (Clean / Corrupt %)")
-    for lbl, r in all_results['pwkt'].items():
-        print(f"  {lbl:<45} | {r['clean_avg']:.2f}% / {r['corrupt_avg']:.2f}%")
-
-    print("\n▶ TABLE 3 — ADA-JSD (Corrupt Avg % at each xi)")
-    for lbl, r in all_results['adajsd'].items():
-        vals = "  ".join(
-            f"xi={xi}: {r[xi]['corrupt_avg']:.2f}%"
-            for xi in [0.0, 0.5, 1.0]
-        )
-        print(f"  {lbl:<35} | {vals}")
-
-    print("\n▶ TABLE 4 — MCE Configuration (Clean / Corrupt %)")
-    for lbl, r in all_results['mce'].items():
-        print(f"  {lbl:<45} | {r['clean_avg']:.2f}% / {r['corrupt_avg']:.2f}%")
-
-    print("\n▶ TABLE 5 — DCL Strategy (Clean / Corrupt %)")
-    for lbl, r in all_results['dcl'].items():
-        print(f"  {lbl:<40} | "
-              f"{r['clean_avg']:.2f}% / {r['corrupt_avg']:.2f}%")
+    titles = {'component': 'TABLE 1 — Component Ablation',
+              'pwkt': 'TABLE 2 — PWKT Distribution',
+              'adajsd': 'TABLE 3 — ADA-JSD',
+              'mce': 'TABLE 4 — MCE Configuration',
+              'dcl': 'TABLE 5 — DCL Strategy'}
+    for name, results in all_results.items():
+        print(f"\n▶ {titles[name]}")
+        for label, result in results.items():
+            if name == 'adajsd':
+                values = "  ".join(f"xi={xi}: {result[xi]['corrupt_avg']:.2f}%"
+                                   for xi in [0.0, 0.5, 1.0])
+                print(f"  {label:<35} | {values}")
+            else:
+                print(f"  {label:<45} | {result['clean_avg']:.2f}% / {result['corrupt_avg']:.2f}%")
 
     # ── Save to JSON ──────────────────────────────────────────────────────────
     def _serialize(obj):
