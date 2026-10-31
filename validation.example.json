@@ -1,0 +1,16 @@
+{
+  "datasets": [
+    {
+      "name": "CIFAR-10.1-v6",
+      "kind": "cifar10.1",
+      "root": "validation_data/cifar10.1",
+      "split": "test"
+    },
+    {
+      "name": "CIFAR-10.2-test",
+      "kind": "cifar10.2",
+      "root": "validation_data/cifar10.2",
+      "split": "test"
+    }
+  ]
+}

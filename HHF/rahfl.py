@@ -7,13 +7,11 @@ import torch.backends.cudnn
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import logging
 from tqdm import tqdm
 from pathlib import Path
 
-# Ensure we can import from two levels up (adjust if needed)
-sys.path.append("..")
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+# Resolve imports relative to the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from RAHFL.Dataset.utils import (
     init_logs,
@@ -24,18 +22,11 @@ from RAHFL.Dataset.utils import (
     mkdirs,
 )
 from RAHFL.HHF.loss import SupConLoss, DCLLoss
+from RAHFL.HHF.reporting import save_history
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Since we've already done:
-#   from google.colab import drive
-#   drive.mount('/content/drive')
-#   os.chdir('/content/drive/MyDrive/Colab Notebooks/RAHFL')
-#
-# our working directory is:
-#   /content/drive/MyDrive/Colab Notebooks/RAHFL
-#
-# So any subfolder under this can be referenced with forward slashes (Linux style).
-ROOT_DIR = Path.cwd()  # /content/drive/MyDrive/Colab Notebooks/RAHFL
+# Resolve data and checkpoint paths relative to the checkout.
+ROOT_DIR = Path(__file__).resolve().parents[1]
 # ──────────────────────────────────────────────────────────────────────────────
 
 # GPU setup
@@ -151,7 +142,7 @@ def update_model_via_private_data(
         optimizer = optim.SGD(network.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-4)
 
     participant_local_loss_batch_list = []
-    
+
     train_bar = tqdm(private_dataloader, desc="Private Training", unit="batch", ncols=80, leave=True)
 
     for _ in range(localtrain_epoch):
@@ -305,13 +296,13 @@ if __name__ == '__main__':
         test_bs=TestBatchSize,
         dataidxs=public_data_indexs,
         corrupt_rate=Public_Corrupt_Rate,
+        test_corrupt_rate=Test_Corrupt_Rate,
         augmix_module=None
     )
 
     print(f"Public training dataset size: {len(public_train_ds)}")
     col_loss_list    = []
     local_loss_list  = []
-    local_jsd_loss_list = []
     acc_list         = []
 
     for epoch_index in range(CommunicationEpoch):
@@ -332,6 +323,7 @@ if __name__ == '__main__':
                 datadir=str(Private_Dataset_Dir),
                 train_bs=TrainBatchSize,
                 test_bs=TestBatchSize,
+                corrupt_rate=Private_Corrupt_Rate,
                 test_corrupt_rate=Test_Corrupt_Rate
             )
             network = net_list[participant_index]
@@ -349,11 +341,10 @@ if __name__ == '__main__':
 
         # ───────── HHF (Public Data Fusion) ───────────────────────────────────
         print("Starting public fusion (HHF) phase")
-        for batch_idx, (images, _) in enumerate(public_train_dl):
+        for images, _ in public_train_dl:
             linear_output_list         = []
             linear_output_target_list  = []
             kl_loss_batch_list         = []
-            participant_kl_list        = []
 
             # 1) Calculate each participant’s logits and targets
             for participant_index in range(N_Participants):
@@ -427,6 +418,7 @@ if __name__ == '__main__':
                 test_bs=TestBatchSize,
                 dataidxs=net_dataidx_map[participant_index],
                 corrupt_rate=Private_Corrupt_Rate,
+                test_corrupt_rate=Test_Corrupt_Rate,
                 augmix_module=AugMix_Module
             )
 
@@ -461,6 +453,7 @@ if __name__ == '__main__':
                     datadir=str(Private_Dataset_Dir),
                     train_bs=TrainBatchSize,
                     test_bs=TestBatchSize,
+                    corrupt_rate=Private_Corrupt_Rate,
                     test_corrupt_rate=Test_Corrupt_Rate
                 )
                 network = net_list[participant_index]
@@ -483,4 +476,5 @@ if __name__ == '__main__':
                 ckpt_path = Model_Save_Dir / f"{netname}_{participant_index}.ckpt"
                 torch.save(network.state_dict(), str(ckpt_path))
                 logger.info(f"Saved model: {ckpt_path}")
+            save_history(Model_Save_Dir, acc_list, col_loss_list, local_loss_list, final_accs)
             print("Final models saved")

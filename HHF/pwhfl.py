@@ -7,20 +7,19 @@ import torch.backends.cudnn
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import torchvision.transforms.functional as TF
 from tqdm import tqdm
 from pathlib import Path
 
-sys.path.append("..")
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from RAHFL.Dataset.utils import (
     init_logs, partition_data, get_dataloader,
     init_nets, generate_public_data_indexs, mkdirs,
 )
 from RAHFL.HHF.loss import SupConLoss, DCLLoss
+from RAHFL.HHF.reporting import save_history
 
-ROOT_DIR = Path.cwd()
+ROOT_DIR = Path(__file__).resolve().parents[1]
 os.environ["CUDA_DEVICE_ORDER"]    = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -192,6 +191,8 @@ def update_model_via_private_data(
     device, network, localtrain_epoch, private_dataloader,
     loss_function, optimizer_method, learning_rate, logger
 ):
+    if loss_function != 'CE':
+        raise ValueError(f'Unsupported loss_function: {loss_function}; expected CE')
     if optimizer_method == 'Adam':
         optimizer = optim.Adam(network.parameters(), lr=learning_rate)
     else:
@@ -228,7 +229,7 @@ def update_model_via_private_data(
                         F.kl_div(pm, p_1, reduction='batchmean') +
                         F.kl_div(pm, p_2, reduction='batchmean')) / 3.0
 
-                loss = ce_loss + lam * jsd   # ← adaptive λ 
+                loss = ce_loss + lam * jsd   # ← adaptive λ
 
                 if CL_Module == 'supcon':
                     imgs_c = torch.cat([images[0], images[1]], 0).to(device)
@@ -326,7 +327,7 @@ if __name__ == '__main__':
         network   = nn.DataParallel(network, device_ids=device_ids).to(device)
         ckpt_path = Model_Load_Dir / f"{Nets_Name_List[i]}_{i}.ckpt"
         network.load_state_dict(torch.load(str(ckpt_path)))
-        logger.info(f"Client {i} ({Nets_Name_Lists[i] if False else Nets_Name_List[i]}): loaded")
+        logger.info(f"Client {i} ({Nets_Name_List[i]}): loaded")
 
     # ── Public data ───────────────────────────────────────────────────────────
     pub_idx = generate_public_data_indexs(
@@ -549,4 +550,5 @@ if __name__ == '__main__':
                 torch.save(network.state_dict(), str(ckpt_path))
                 logger.info(f"Saved: {ckpt_path}")
 
+            save_history(Model_Save_Dir, acc_list, col_loss_list, local_loss_list, final_accs)
             logger.info("PWHFL training complete.")

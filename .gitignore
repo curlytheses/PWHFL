@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+Logs/
+validation_data/
+validation_results/
+*.ckpt
+*.npy
+*.npz
+Network/Model_Storage_*/
+APEX_Storage_*/
+Final_Model_Storage_*/
+ablation_results.json

@@ -86,6 +86,15 @@ class MobileNetV2(nn.Module):
                 in_planes = out_planes
         return nn.Sequential(*layers)
 
+    def forward_logits(self, x):
+        """Evaluation-only fast path; retains all projector checkpoint parameters.
+
+        The default forward still computes and returns both outputs, preserving
+        training-time BatchNorm updates and the original model interface.
+        """
+        out = self.backbone(x)
+        return self.linear(out.view(out.size(0), -1))
+
     def forward(self, x):
         out = self.backbone(x)
         out = out.view(out.size(0), -1)
